@@ -340,6 +340,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Reflector } from 'three/addons/objects/Reflector.js';
 
@@ -348,8 +349,44 @@ const TAU = Math.PI * 2;
 const clamp = THREE.MathUtils.clamp;
 const lerp = THREE.MathUtils.lerp;
 
-const renderer = new THREE.WebGLRenderer({antialias:true, powerPreference:'high-performance'});
-renderer.setPixelRatio(Math.min(devicePixelRatio, 1.8));
+// URL末尾で画質を選択可能。
+// ?quality=high  : 標準の高画質
+// ?quality=ultra : 高性能PC向け
+// ?quality=low   : 負荷軽減
+const visualQualityName=
+  new URLSearchParams(location.search).get('quality') || 'high';
+
+const visualQualityProfiles={
+  low:{
+    pixelRatio:1.25,
+    shadowSize:1024,
+    reflectionSize:512,
+    bevelSegments:2,
+    contactOpacity:.85
+  },
+  high:{
+    pixelRatio:2,
+    shadowSize:2048,
+    reflectionSize:1024,
+    bevelSegments:3,
+    contactOpacity:1
+  },
+  ultra:{
+    pixelRatio:2.5,
+    shadowSize:4096,
+    reflectionSize:1536,
+    bevelSegments:5,
+    contactOpacity:1
+  }
+};
+const visualQuality=
+  visualQualityProfiles[visualQualityName] || visualQualityProfiles.high;
+
+const renderer = new THREE.WebGLRenderer({
+  antialias:true,
+  powerPreference:'high-performance'
+});
+renderer.setPixelRatio(Math.min(devicePixelRatio,visualQuality.pixelRatio));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -432,7 +469,22 @@ function mesh(geo,mat,parent=scene,x=0,y=0,z=0){
   parent.add(m); return m;
 }
 function box(w,h,d,mat,parent=scene,x=0,y=0,z=0){
-  return mesh(new THREE.BoxGeometry(w,h,d),mat,parent,x,y,z);
+  const shortest=Math.min(w,h,d);
+
+  // 壁・床・極薄の印刷面は従来の形状を維持する。
+  // 家具の縁だけを面取りし、ライトの細いハイライトを拾わせる。
+  const shouldBevel=
+    shortest>=.018 &&
+    w<3.4 && h<3.05 && d<3.4;
+
+  const radius=Math.min(.012,shortest*.15);
+  const geometry=shouldBevel
+    ? new RoundedBoxGeometry(
+        w,h,d,visualQuality.bevelSegments,radius
+      )
+    : new THREE.BoxGeometry(w,h,d);
+
+  return mesh(geometry,mat,parent,x,y,z);
 }
 function cylinder(r1,r2,h,mat,parent=scene,x=0,y=0,z=0,segments=32){
   return mesh(new THREE.CylinderGeometry(r1,r2,h,segments),mat,parent,x,y,z);
@@ -560,7 +612,17 @@ const brass=material('#b99451',.28,.72);
 const plastic=new THREE.MeshPhysicalMaterial({
   color:'#eeeadd',roughness:.23,metalness:0,clearcoat:.7,clearcoatRoughness:.17
 });
-const fabric=material('#e2d5b5',.98,0,{map:tiled(weaveTexture,4,4),bumpMap:tiled(weaveTexture,4,4),bumpScale:.008});
+const fabric=new THREE.MeshPhysicalMaterial({
+  color:'#e2d5b5',
+  roughness:.94,
+  metalness:0,
+  map:tiled(weaveTexture,4,4),
+  bumpMap:tiled(weaveTexture,4,4),
+  bumpScale:.0022,
+  sheen:.48,
+  sheenColor:'#e4d6b7',
+  sheenRoughness:.88
+});
 const leather=material('#b28765',.63,0,{
   map:leatherTexture,bumpMap:leatherTexture,bumpScale:.009
 });
@@ -614,9 +676,17 @@ mesh(new THREE.PlaneGeometry(2.27,2.26),new THREE.MeshPhysicalMaterial({
 }),windowFrame,0,0,-.04);
 
 // カーテン。裾ほどよく揺れ、複数の非同期の波で周期感を薄める。
-const curtainMat=material('#e8dfc7',.98,0,{
-  map:tiled(weaveTexture,5,7),bumpMap:tiled(weaveTexture,5,7),bumpScale:.007,
-  side:THREE.DoubleSide
+const curtainMat=new THREE.MeshPhysicalMaterial({
+  color:'#e8dfc7',
+  roughness:.94,
+  metalness:0,
+  map:tiled(weaveTexture,5,7),
+  bumpMap:tiled(weaveTexture,5,7),
+  bumpScale:.0018,
+  side:THREE.DoubleSide,
+  sheen:.62,
+  sheenColor:'#e9dec7',
+  sheenRoughness:.91
 });
 const curtains=[];
 for(const side of [-1,1]){
@@ -646,9 +716,12 @@ cylinder(.09,.09,.06,steel,ceilingLightBody,0,.06,0);
 const mainLight=new THREE.PointLight('#fff0d3',38,12,2);
 mainLight.position.set(0,2.93,-.15);
 mainLight.castShadow=true;
-mainLight.shadow.mapSize.set(1024,1024);
-mainLight.shadow.bias=-.00045;
-mainLight.shadow.normalBias=.025;
+mainLight.shadow.mapSize.set(
+  visualQuality.shadowSize,
+  visualQuality.shadowSize
+);
+mainLight.shadow.bias=-.00012;
+mainLight.shadow.normalBias=.010;
 mainLight.shadow.camera.near=.1;
 mainLight.shadow.camera.far=13;
 scene.add(mainLight);
@@ -659,8 +732,12 @@ const windowLight=new THREE.SpotLight('#b7d0f2',32,13,.76,.72,1.8);
 windowLight.position.set(-3.75,2.5,0);
 windowLight.target.position.set(1,.25,.8);
 windowLight.castShadow=true;
-windowLight.shadow.mapSize.set(1024,1024);
-windowLight.shadow.normalBias=.025;
+windowLight.shadow.mapSize.set(
+  visualQuality.shadowSize,
+  visualQuality.shadowSize
+);
+windowLight.shadow.bias=-.00008;
+windowLight.shadow.normalBias=.009;
 scene.add(windowLight,windowLight.target);
 
 // ドアと金具。蝶番を原点にして内側へ開く。
@@ -1115,8 +1192,17 @@ const mattressMat=material('#d8d2bd',.99,0,{
 });
 box(1.84,.23,2.98,mattressMat,bed,0,.755,0);
 
-const blanketMat=material('#607c7c',1,0,{
-  map:tiled(weaveTexture,5,7),bumpMap:tiled(weaveTexture,5,7),bumpScale:.012,side:THREE.DoubleSide
+const blanketMat=new THREE.MeshPhysicalMaterial({
+  color:'#607c7c',
+  roughness:.96,
+  metalness:0,
+  map:tiled(weaveTexture,5,7),
+  bumpMap:tiled(weaveTexture,5,7),
+  bumpScale:.003,
+  side:THREE.DoubleSide,
+  sheen:.56,
+  sheenColor:'#9eb8b4',
+  sheenRoughness:.90
 });
 const blanketGeo=new THREE.PlaneGeometry(2.10,2.19,45,45);
 {
@@ -1347,8 +1433,13 @@ inspectionFloor.rotation.x=-Math.PI/2;
 const inspectKey=new THREE.SpotLight('#fff0d6',38,10,.68,.6,2);
 inspectKey.position.set(-2,3.5,3);
 inspectKey.target.position.set(0,.35,0);
-inspectKey.castShadow=true;inspectKey.shadow.mapSize.set(1024,1024);
-inspectKey.shadow.normalBias=.012;
+inspectKey.castShadow=true;
+inspectKey.shadow.mapSize.set(
+  visualQuality.shadowSize,
+  visualQuality.shadowSize
+);
+inspectKey.shadow.bias=-.00008;
+inspectKey.shadow.normalBias=.005;
 inspectScene.add(inspectKey,inspectKey.target);
 const inspectRim=new THREE.PointLight('#9eddf4',11,8,2);
 inspectRim.position.set(1.4,1.5,-1.3);inspectScene.add(inspectRim);
@@ -1461,8 +1552,8 @@ rainRoomRoot.visible=false;
 // 浅い水なので、反射を薄く重ねて床の木目も見せる。
 const waterReflection=new Reflector(new THREE.PlaneGeometry(7.86,7.86),{
   clipBias:.003,
-  textureWidth:768,
-  textureHeight:768,
+  textureWidth:visualQuality.reflectionSize,
+  textureHeight:visualQuality.reflectionSize,
   color:0xc6d5d8
 });
 waterReflection.rotation.x=-Math.PI/2;
@@ -2898,10 +2989,33 @@ function finishMerged(parts,mat,parent){
   for(const part of parts)part.dispose();
   return mesh(geometry,mat,parent);
 }
-const hallFloorMaterial=material('#bdac8b',.64,0,{
-  map:tiled(woodTexture,1,1),bumpMap:woodTexture,bumpScale:.005
+const hallFloorColorMap=tiled(floorTexture,1,1);
+const hallFloorBumpMap=tiled(floorTexture,1,1);
+hallFloorBumpMap.colorSpace=THREE.NoColorSpace;
+
+const hallFloorMaterial=material('#eee7da',.53,0,{
+  map:hallFloorColorMap,
+  bumpMap:hallFloorBumpMap,
+  bumpScale:.0025
 });
-finishMerged(hallFloorParts,hallFloorMaterial,corridorScene);
+const detailedHallFloor=finishMerged(
+  hallFloorParts,hallFloorMaterial,corridorScene
+);
+
+// パーツ単位ではなく、廊下の座標に沿って木目を貼る。
+// 32mの区間切り替えでも模様がつながる縮尺。
+{
+  const position=detailedHallFloor.geometry.attributes.position;
+  const uv=detailedHallFloor.geometry.attributes.uv;
+  for(let i=0;i<position.count;i++){
+    uv.setXY(
+      i,
+      position.getX(i)/4,
+      position.getZ(i)/4
+    );
+  }
+  uv.needsUpdate=true;
+}
 finishMerged(hallWallParts,wall,corridorScene);
 finishMerged(hallTrimParts,trim,corridorScene);
 finishMerged(hallCeilingParts,material('#c8c8b9',.98),corridorScene);
@@ -4133,6 +4247,315 @@ addEventListener('resize',()=>{
   camera.aspect=inspectCamera.aspect=innerWidth/innerHeight;
   camera.updateProjectionMatrix();inspectCamera.updateProjectionMatrix();
 });
+
+// ------------------------------------------------------------
+// 高精細な素材と接地影
+// ------------------------------------------------------------
+
+// RoughnessやBumpは色ではなく数値データとして扱う。
+// 同じ画像を使う場合も、カラー用のテクスチャとは分ける。
+function visualDataTexture(source,repeatX=1,repeatY=1){
+  const texture=source.clone();
+  texture.colorSpace=THREE.NoColorSpace;
+  texture.wrapS=THREE.RepeatWrapping;
+  texture.wrapT=THREE.RepeatWrapping;
+  texture.repeat.set(repeatX,repeatY);
+  texture.needsUpdate=true;
+  return texture;
+}
+
+let visualTextureSeed=24681357;
+function visualTextureRandom(){
+  visualTextureSeed=
+    (Math.imul(visualTextureSeed,1664525)+1013904223)>>>0;
+  return visualTextureSeed/4294967296;
+}
+
+function visualRoughnessTexture(kind){
+  const texture=canvasTexture((ctx,size)=>{
+    const image=ctx.createImageData(size,size);
+    const pixels=image.data;
+
+    for(let y=0;y<size;y++){
+      for(let x=0;x<size;x++){
+        const noise=visualTextureRandom()-.5;
+        let value;
+
+        if(kind==='wood'){
+          value=204+
+            Math.sin(y*.18+Math.sin(x*.014)*1.2)*9+
+            Math.sin(y*.49+x*.007)*3+
+            noise*9;
+        }else if(kind==='leather'){
+          value=216+
+            Math.sin(x*.39+y*.26)*4+
+            noise*23;
+        }else if(kind==='plastic'){
+          value=229+
+            Math.sin(x*.016+y*.024)*3+
+            noise*5;
+        }else if(kind==='paper'){
+          value=241+noise*17;
+        }else{
+          value=232+noise*11;
+        }
+
+        const index=(y*size+x)*4;
+        const channel=clamp(Math.round(value),0,255);
+        pixels[index]=channel;
+        pixels[index+1]=channel;
+        pixels[index+2]=channel;
+        pixels[index+3]=255;
+      }
+    }
+
+    ctx.putImageData(image,0,0);
+
+    if(kind==='plastic'){
+      // ごく細い成形・使用痕。色ではなく反射のムラとしてだけ見せる。
+      ctx.strokeStyle='rgba(175,175,175,.12)';
+      ctx.lineWidth=.45;
+      for(let i=0;i<95;i++){
+        const x=visualTextureRandom()*size;
+        const y=visualTextureRandom()*size;
+        ctx.beginPath();
+        ctx.moveTo(x,y);
+        ctx.lineTo(
+          x+4+visualTextureRandom()*24,
+          y+(visualTextureRandom()-.5)*3
+        );
+        ctx.stroke();
+      }
+    }
+  },512);
+
+  texture.colorSpace=THREE.NoColorSpace;
+  texture.wrapS=texture.wrapT=THREE.RepeatWrapping;
+  return texture;
+}
+
+const visualWoodRoughness=visualRoughnessTexture('wood');
+const visualLeatherRoughness=visualRoughnessTexture('leather');
+const visualPlasticRoughness=visualRoughnessTexture('plastic');
+const visualPaperRoughness=visualRoughnessTexture('paper');
+
+// 木材：大きすぎる凹凸を弱め、光沢の細かな違いで木目を見せる。
+wood.bumpMap=visualDataTexture(woodTexture);
+wood.bumpScale=.0018;
+wood.roughness=.56;
+wood.roughnessMap=visualWoodRoughness;
+wood.envMapIntensity=.78;
+wood.needsUpdate=true;
+
+darkWood.bumpMap=visualDataTexture(woodTexture);
+darkWood.bumpScale=.002;
+darkWood.roughness=.66;
+darkWood.roughnessMap=visualWoodRoughness;
+darkWood.envMapIntensity=.68;
+darkWood.needsUpdate=true;
+
+// 壁紙：石のような深い凹凸にしない。
+wall.bumpMap=visualDataTexture(wallpaperTexture,4,2);
+wall.bumpScale=.0014;
+wall.roughness=.96;
+wall.needsUpdate=true;
+
+// スイッチなどのプラスチック。
+plastic.roughness=.27;
+plastic.roughnessMap=visualPlasticRoughness;
+plastic.clearcoat=.40;
+plastic.clearcoatRoughness=.23;
+plastic.needsUpdate=true;
+
+// 革：粒は細かく、金属や濡れた表面とは違う鈍い反射。
+leather.bumpMap=visualDataTexture(leatherTexture,2,2);
+leather.bumpScale=.0024;
+leather.roughness=.76;
+leather.roughnessMap=visualLeatherRoughness;
+leather.envMapIntensity=.64;
+leather.needsUpdate=true;
+
+// 布の凹凸マップを線形データへ変更。
+fabric.bumpMap=visualDataTexture(weaveTexture,4,4);
+curtainMat.bumpMap=visualDataTexture(weaveTexture,5,7);
+blanketMat.bumpMap=visualDataTexture(weaveTexture,5,7);
+
+for(const mat of [fabric,curtainMat,blanketMat]){
+  mat.needsUpdate=true;
+}
+
+// 金属は鏡にしすぎず、使われている金具らしい反射にする。
+steel.roughness=.29;
+steel.envMapIntensity=1.05;
+steel.needsUpdate=true;
+brass.roughness=.32;
+brass.envMapIntensity=.95;
+brass.needsUpdate=true;
+
+// 最初の部屋の床。異変解除用に保管されたマテリアルを更新する。
+for(const surface of roomSurfaces){
+  if(!surface.floor)continue;
+  const floorMat=surface.original;
+  floorMat.bumpMap=visualDataTexture(floorTexture,3,3);
+  floorMat.bumpScale=.0024;
+  floorMat.roughness=.63;
+  floorMat.roughnessMap=visualWoodRoughness;
+  floorMat.envMapIntensity=.78;
+  floorMat.needsUpdate=true;
+}
+
+hallFloorMaterial.roughness=.65;
+hallFloorMaterial.roughnessMap=visualWoodRoughness;
+hallFloorMaterial.envMapIntensity=.72;
+hallFloorMaterial.needsUpdate=true;
+
+// 紙はほぼ拡散反射。印刷物の色に余計な光沢を乗せない。
+paper.material.roughness=.98;
+paper.material.roughnessMap=visualPaperRoughness;
+paper.material.needsUpdate=true;
+for(const mat of dreamPaperMaterials){
+  mat.roughness=.98;
+  mat.roughnessMap=visualPaperRoughness;
+  mat.needsUpdate=true;
+}
+
+// 特殊な部屋も、真っ白な発光面ではなく光を受ける白い素材にする。
+dreamWallMaterial.color.set('#ffffff');
+dreamWallMaterial.roughness=.97;
+dreamWallMaterial.bumpMap=visualDataTexture(wallpaperTexture,4,2);
+dreamWallMaterial.bumpScale=.0006;
+dreamWallMaterial.needsUpdate=true;
+dreamFloorMaterial.color.set('#ffffff');
+dreamFloorMaterial.roughness=.64;
+dreamFloorMaterial.roughnessMap=visualPlasticRoughness;
+dreamFloorMaterial.needsUpdate=true;
+
+// 衣類やマットレスなど、個別に生成された布にも細かい凹凸を適用。
+const visualVisitedMaterials=new Set();
+scene.traverse(object=>{
+  if(!object.isMesh)return;
+  const materials=Array.isArray(object.material)
+    ? object.material : [object.material];
+
+  for(const mat of materials){
+    if(!mat || visualVisitedMaterials.has(mat))continue;
+    visualVisitedMaterials.add(mat);
+
+    if(mat.bumpMap &&
+       mat.bumpMap.image===weaveTexture.image &&
+       ![fabric,curtainMat,blanketMat].includes(mat)){
+      const repeat=mat.bumpMap.repeat;
+      mat.bumpMap=visualDataTexture(
+        weaveTexture,repeat.x,repeat.y
+      );
+      mat.bumpScale=Math.min(mat.bumpScale || .002,.0028);
+      mat.roughness=Math.max(mat.roughness,.91);
+      mat.needsUpdate=true;
+    }
+  }
+});
+
+// 半透明の接地影。
+// 実際のライトの影に加えて、家具の直下に弱い遮蔽感を足す。
+// 光源に応じた完全なAO計算ではなく、軽量な補助表現。
+const visualContactTexture=canvasTexture((ctx,size)=>{
+  const image=ctx.createImageData(size,size);
+  for(let y=0;y<size;y++){
+    for(let x=0;x<size;x++){
+      const nx=(x+.5)/size*2-1;
+      const ny=(y+.5)/size*2-1;
+
+      // 中央は穏やかに、外縁は滑らかに消える。
+      const distance=Math.pow(
+        Math.pow(Math.abs(nx),4)+Math.pow(Math.abs(ny),4),
+        .25
+      );
+      const mask=1-THREE.MathUtils.smoothstep(distance,.24,1);
+      const alpha=mask*mask*.62;
+      const index=(y*size+x)*4;
+      image.data[index]=0;
+      image.data[index+1]=0;
+      image.data[index+2]=0;
+      image.data[index+3]=Math.round(alpha*255);
+    }
+  }
+  ctx.putImageData(image,0,0);
+},256);
+
+const visualContacts=[];
+
+function visualContact(parent,width,depth,x,z,opacity,y=.005){
+  const mat=new THREE.MeshBasicMaterial({
+    color:'#000000',
+    map:visualContactTexture,
+    transparent:true,
+    opacity:opacity*visualQuality.contactOpacity,
+    depthWrite:false,
+    polygonOffset:true,
+    polygonOffsetFactor:-1,
+    polygonOffsetUnits:-1,
+    toneMapped:false
+  });
+  const contact=new THREE.Mesh(
+    new THREE.PlaneGeometry(width,depth),mat
+  );
+  contact.rotation.x=-Math.PI/2;
+  contact.position.set(x,y,z);
+  contact.castShadow=false;
+  contact.receiveShadow=false;
+  contact.renderOrder=0;
+  parent.add(contact);
+  visualContacts.push(contact);
+  return contact;
+}
+
+// 机の下の弱い影と、脚の小さな接地影。
+visualContact(desk,2.25,1.23,0,0,.18);
+for(const x of [-.96,.96]){
+  for(const z of [-.39,.39]){
+    visualContact(desk,.23,.23,x,z,.35,.006);
+  }
+}
+
+// クローゼットは底面が広いので、低い位置に濃い影ができる。
+visualContact(wardrobe,1.95,1.09,0,0,.32);
+visualContact(wardrobe,1.72,.55,0,.24,.12,.006);
+
+// ベッド下は暗くなりすぎないようにし、ポーチが見える程度を保つ。
+visualContact(bed,2.10,3.30,0,0,.13);
+for(const x of [-.86,.86]){
+  for(const z of [-1.39,1.39]){
+    visualContact(bed,.25,.25,x,z,.33,.006);
+  }
+}
+
+// 椅子は動かせるので、影も椅子に追従。
+// 浮遊異変のときは直下に貼り付いた影を表示しない。
+const visualChairContact=visualContact(chair,.83,.82,0,0,.23);
+visualChairContact.onBeforeRender=function(){
+  this.material.opacity=activeAnomaly==='floating'
+    ? 0
+    : .23*visualQuality.contactOpacity;
+};
+
+visualContact(trash,.52,.52,0,0,.28);
+
+// 廊下の照明の色温度を少しばらつかせる。
+// 強い色違いではなく、同じ種類の電球の個体差程度にする。
+const visualHallWarmColors=[
+  new THREE.Color('#ffe7c2'),
+  new THREE.Color('#ffe2b5'),
+  new THREE.Color('#f7e8cf')
+];
+for(let i=0;i<activeHallLights.length;i++){
+  activeHallLights[i].color.copy(
+    visualHallWarmColors[i%visualHallWarmColors.length]
+  );
+}
+
+// 追加した接地影・変更したマテリアルを、扉越しのプレビューにも反映。
+scene.updateMatrixWorld(true);
+refreshRoomPreview();
 
 // 最初のフレームを描画してから、ロード表示を外す。
 renderer.render(scene,camera);
