@@ -353,10 +353,28 @@ const lerp = THREE.MathUtils.lerp;
 // ?quality=high  : 標準の高画質
 // ?quality=ultra : 高性能PC向け
 // ?quality=low   : 負荷軽減
-const visualQualityName=
-  new URLSearchParams(location.search).get('quality') || 'high';
+let savedVisualQuality='';
+try{
+  savedVisualQuality=localStorage.getItem('frontroom.graphics') || '';
+}catch(error){
+  // 保存を許可していない環境でも、ゲーム内の設定変更は利用できる。
+}
+
+let visualQualityName=
+  new URLSearchParams(location.search).get('quality') ||
+  savedVisualQuality ||
+  'high';
+
+let graphicsMenuOpen=false;
 
 const visualQualityProfiles={
+  classic:{
+    pixelRatio:1.8,
+    shadowSize:1024,
+    reflectionSize:768,
+    bevelSegments:0,
+    contactOpacity:0
+  },
   low:{
     pixelRatio:1.25,
     shadowSize:1024,
@@ -379,8 +397,12 @@ const visualQualityProfiles={
     contactOpacity:1
   }
 };
-const visualQuality=
-  visualQualityProfiles[visualQualityName] || visualQualityProfiles.high;
+if(!Object.prototype.hasOwnProperty.call(
+  visualQualityProfiles,visualQualityName
+)){
+  visualQualityName='high';
+}
+let visualQuality=visualQualityProfiles[visualQualityName];
 
 const renderer = new THREE.WebGLRenderer({
   antialias:true,
@@ -478,11 +500,19 @@ function box(w,h,d,mat,parent=scene,x=0,y=0,z=0){
     w<3.4 && h<3.05 && d<3.4;
 
   const radius=Math.min(.012,shortest*.15);
-  const geometry=shouldBevel
+  const geometry=shouldBevel && visualQuality.bevelSegments>0
     ? new RoundedBoxGeometry(
         w,h,d,visualQuality.bevelSegments,radius
       )
     : new THREE.BoxGeometry(w,h,d);
+
+  // サイズを記録し、画質変更時に同じ家具の形状だけを差し替える。
+  if(shouldBevel){
+    geometry.userData.frontroomBevel={
+      width:w,height:h,depth:d,radius
+    };
+    geometry.userData.frontroomBevelLevel=visualQuality.bevelSegments;
+  }
 
   return mesh(geometry,mat,parent,x,y,z);
 }
@@ -2706,7 +2736,7 @@ const playerRadius=.16;
 
 function movementBlockedByUI(){
   return (mode!=='room' && mode!=='corridor') ||
-    developerMenuOpen ||
+    developerMenuOpen || graphicsMenuOpen ||
     paperVisible || fusionRunning || endingStage!=='none' ||
     $('#win').style.display==='grid';
 }
@@ -4096,7 +4126,9 @@ let hoverAge=0;
 
 function tick(){
   requestAnimationFrame(tick);
-  const dt=Math.min(clock.getDelta(),.05);
+  const rawFrameSeconds=clock.getDelta();
+  const dt=Math.min(rawFrameSeconds,.05);
+  updateGraphicsPerformance(rawFrameSeconds);
   time+=dt;updateTweens(dt);
 
   if(cameraTravel && mode==='room'){
@@ -4175,7 +4207,8 @@ function tick(){
 
   hoverAge+=dt;
   if(hoverAge>.09 && !down && !paperVisible &&
-     !developerMenuOpen && !fusionRunning && endingStage==='none'){
+     !developerMenuOpen && !graphicsMenuOpen &&
+     !fusionRunning && endingStage==='none'){
     hoverAge=0;
     hovered=pick(lastPointer.x,lastPointer.y);
     renderer.domElement.style.cursor=hovered?'pointer':'grab';
@@ -4505,6 +4538,7 @@ function visualContact(parent,width,depth,x,z,opacity,y=.005){
   contact.receiveShadow=false;
   contact.renderOrder=0;
   parent.add(contact);
+  mat.userData.frontroomContactOpacity=opacity;
   visualContacts.push(contact);
   return contact;
 }
@@ -4556,6 +4590,435 @@ for(let i=0;i<activeHallLights.length;i++){
 // 追加した接地影・変更したマテリアルを、扉越しのプレビューにも反映。
 scene.updateMatrixWorld(true);
 refreshRoomPreview();
+
+// ------------------------------------------------------------
+// ゲーム内グラフィック設定
+// ------------------------------------------------------------
+const graphicsEnglish=document.documentElement.lang.startsWith('en');
+const graphicsText=graphicsEnglish?{
+  button:'Graphics',
+  title:'Graphics Settings',
+  introduction:'Changes apply immediately. Your progress will not be reset.',
+  classic:'Legacy Style',
+  classicDescription:'Original-style resolution and shadows. No rounded furniture edges or added contact shadows.',
+  low:'Low',
+  lowDescription:'Lower resolution, reflections, and geometry detail for smoother performance.',
+  high:'High',
+  highDescription:'Detailed materials, rounded edges, and high-resolution shadows.',
+  ultra:'Ultra',
+  ultraDescription:'Sharper reflections and shadows with finer geometry. Best for powerful PCs.',
+  note:'Legacy Style keeps the improved materials and hallway wood mapping. It is not an exact restoration of the older renderer.',
+  status:'Current setting',
+  close:'Resume',
+  applied:'Graphics updated. Your progress has been preserved.',
+  saved:'Your selection is saved for your next visit.',
+  unsaved:'This browser does not allow settings to be saved.',
+  fps:'FPS',
+  paused:'Measuring…'
+}:{
+  button:'画質設定',
+  title:'グラフィック設定',
+  introduction:'その場で反映されます。進行状況はリセットされません。',
+  classic:'従来風',
+  classicDescription:'以前に近い解像度と影。家具の面取りと追加の接地影を無効にします。',
+  low:'軽量',
+  lowDescription:'解像度・反射・形状の精度を抑え、動作の軽さを優先します。',
+  high:'高画質',
+  highDescription:'素材の質感、家具の面取り、高解像度の影を楽しめる設定です。',
+  ultra:'最高画質',
+  ultraDescription:'影・反射・面取りの精度をさらに上げます。高性能PC向けです。',
+  note:'「従来風」でも、改善済みの素材や廊下の木目は維持されます。過去の描画を完全に復元するモードではありません。',
+  status:'現在の設定',
+  close:'ゲームに戻る',
+  applied:'画質を変更しました。進行状況はそのままです。',
+  saved:'次回起動時にも選択した画質を引き継ぎます。',
+  unsaved:'このブラウザでは設定を保存できません。',
+  fps:'FPS',
+  paused:'計測中…'
+};
+
+const graphicsStyle=document.createElement('style');
+graphicsStyle.textContent=`
+  #graphicsButton{
+    position:fixed;right:18px;bottom:91px;z-index:12;
+    border:1px solid #ffffff32;border-radius:9px;
+    background:#142026c9;backdrop-filter:blur(12px);
+    color:#e7eee8;padding:10px 14px;font-size:12px;
+  }
+  #graphicsOverlay{
+    position:fixed;inset:0;z-index:320;
+    display:none;align-items:center;justify-content:center;
+    padding:18px;background:#071017b8;backdrop-filter:blur(10px);
+  }
+  #graphicsPanel{
+    width:min(570px,100%);max-height:90vh;overflow:auto;
+    padding:26px;background:#17252bf5;color:#eef4ef;
+    border:1px solid #d8ede232;border-radius:16px;
+    box-shadow:0 24px 100px #0008;
+  }
+  #graphicsPanel h2{
+    margin:0;font-size:23px;font-weight:500;letter-spacing:.025em;
+  }
+  #graphicsIntro,#graphicsNote,#graphicsSave{
+    font-size:12px;line-height:1.85;color:#b9cbc3;
+  }
+  #graphicsChoices{
+    display:grid;grid-template-columns:1fr 1fr;
+    gap:10px;margin:19px 0;
+  }
+  #graphicsChoices button{
+    text-align:left;min-height:126px;padding:16px;
+    background:#e1eee808;border:1px solid #ffffff22;
+    border-radius:11px;color:#e7f0e9;transition:.2s;
+  }
+  #graphicsChoices button:hover{background:#e1eee816}
+  #graphicsChoices button[aria-pressed="true"]{
+    border-color:#a6d7bf;background:#b8ebd21c;
+    box-shadow:inset 0 0 0 1px #a6d7bf35;
+  }
+  #graphicsChoices strong{
+    display:block;font-size:15px;font-weight:500;margin-bottom:8px;
+  }
+  #graphicsChoices span{
+    display:block;font-size:11px;line-height:1.85;color:#bdcec5;
+  }
+  #graphicsStats{
+    padding:11px 13px;background:#07141866;border-radius:7px;
+    display:flex;justify-content:space-between;gap:12px;
+    font-size:12px;color:#d3e6da;
+  }
+  #graphicsNotice{font-size:12px;line-height:1.8;color:#c8e5d5;min-height:1.8em}
+  #graphicsClose{
+    display:block;margin:18px 0 0 auto;padding:11px 20px;
+    border-radius:8px;border:1px solid #d5ecdf4d;
+    background:#d0e6d813;color:#e6efe8;font-size:12px;
+  }
+  @media(max-width:600px){
+    #graphicsButton{right:12px;bottom:89px;font-size:11px;padding:9px 11px}
+    #graphicsPanel{padding:20px}
+    #graphicsChoices{gap:8px}
+    #graphicsChoices button{padding:12px;min-height:137px}
+  }
+`;
+document.head.appendChild(graphicsStyle);
+
+const graphicsButton=document.createElement('button');
+graphicsButton.id='graphicsButton';
+graphicsButton.textContent=graphicsText.button;
+graphicsButton.setAttribute('aria-haspopup','dialog');
+document.body.appendChild(graphicsButton);
+
+const graphicsOverlay=document.createElement('div');
+graphicsOverlay.id='graphicsOverlay';
+graphicsOverlay.innerHTML=`
+  <section id="graphicsPanel" role="dialog"
+    aria-modal="true" aria-labelledby="graphicsTitle">
+    <h2 id="graphicsTitle"></h2>
+    <p id="graphicsIntro"></p>
+    <div id="graphicsChoices"></div>
+    <div id="graphicsStats">
+      <span id="graphicsCurrent"></span>
+      <span id="graphicsFPS"></span>
+    </div>
+    <p id="graphicsNotice" aria-live="polite"></p>
+    <p id="graphicsNote"></p>
+    <p id="graphicsSave"></p>
+    <button id="graphicsClose"></button>
+  </section>
+`;
+document.body.appendChild(graphicsOverlay);
+
+$('#graphicsTitle').textContent=graphicsText.title;
+$('#graphicsIntro').textContent=graphicsText.introduction;
+$('#graphicsNote').textContent=graphicsText.note;
+$('#graphicsSave').textContent=graphicsText.saved;
+$('#graphicsClose').textContent=graphicsText.close;
+$('#graphicsFPS').textContent=graphicsText.paused;
+
+for(const name of ['classic','low','high','ultra']){
+  const button=document.createElement('button');
+  button.dataset.graphicsPreset=name;
+  button.setAttribute('aria-pressed','false');
+
+  const heading=document.createElement('strong');
+  heading.textContent=graphicsText[name];
+  const description=document.createElement('span');
+  description.textContent=graphicsText[`${name}Description`];
+
+  button.append(heading,description);
+  button.onclick=()=>applyGraphicsPreset(name);
+  $('#graphicsChoices').appendChild(button);
+}
+
+function updateGraphicsSelection(){
+  document.querySelectorAll('[data-graphics-preset]').forEach(button=>{
+    button.setAttribute(
+      'aria-pressed',
+      String(button.dataset.graphicsPreset===visualQualityName)
+    );
+  });
+  $('#graphicsCurrent').textContent=
+    `${graphicsText.status}: ${graphicsText[visualQualityName]}`;
+}
+
+function setGraphicsMenu(open){
+  graphicsMenuOpen=open;
+  movementKeys.clear();
+  walkedThisFrame=0;
+  sprintThisFrame=false;
+  resetCameraGait();
+
+  down=null;
+  dragging=false;
+  touches.clear();
+
+  graphicsOverlay.style.display=open?'flex':'none';
+  $('#tip').style.opacity='0';
+
+  if(open){
+    updateGraphicsSelection();
+    const selected=graphicsOverlay.querySelector(
+      '[aria-pressed="true"]'
+    );
+    selected?.focus();
+  }else{
+    const focused=document.activeElement;
+    if(focused instanceof HTMLElement &&
+       graphicsOverlay.contains(focused)){
+      focused.blur();
+    }
+  }
+}
+
+graphicsButton.onclick=()=>setGraphicsMenu(true);
+$('#graphicsClose').onclick=()=>setGraphicsMenu(false);
+graphicsOverlay.addEventListener('click',event=>{
+  if(event.target===graphicsOverlay)setGraphicsMenu(false);
+});
+
+// Escで背後のポーチや紙まで閉じないよう、先に受け止める。
+addEventListener('keydown',event=>{
+  if(!graphicsMenuOpen)return;
+
+  if(event.code==='Escape'){
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    setGraphicsMenu(false);
+    return;
+  }
+
+  // 設定ボタンのキーボード操作は維持し、ゲームへは伝えない。
+  if(event.code==='Enter' || event.code==='Space'){
+    event.stopImmediatePropagation();
+  }
+},true);
+
+// 共有されている形状も一度だけ生成して使い回す。
+// 繰り返し画質を変更しても、同じ形状を作り続けない。
+const graphicsGeometryCache=new Map();
+const graphicsScenes=[scene,inspectScene,corridorScene,carryScene];
+
+function geometrySettingKey(spec,level){
+  return [
+    spec.width,spec.height,spec.depth,spec.radius,level
+  ].join('|');
+}
+
+// 現在の形状をキャッシュに登録。
+for(const targetScene of graphicsScenes){
+  targetScene.traverse(object=>{
+    const geometry=object.geometry;
+    const spec=geometry?.userData?.frontroomBevel;
+    if(!spec)return;
+    const level=geometry.userData.frontroomBevelLevel;
+    graphicsGeometryCache.set(
+      geometrySettingKey(spec,level),
+      geometry
+    );
+  });
+}
+
+function updateFurnitureDetail(level){
+  for(const targetScene of graphicsScenes){
+    targetScene.traverse(object=>{
+      const geometry=object.geometry;
+      const spec=geometry?.userData?.frontroomBevel;
+      if(!spec)return;
+
+      if(geometry.userData.frontroomBevelLevel===level)return;
+
+      const key=geometrySettingKey(spec,level);
+      let replacement=graphicsGeometryCache.get(key);
+
+      if(!replacement){
+        replacement=level>0
+          ? new RoundedBoxGeometry(
+              spec.width,spec.height,spec.depth,
+              level,spec.radius
+            )
+          : new THREE.BoxGeometry(
+              spec.width,spec.height,spec.depth
+            );
+        replacement.userData.frontroomBevel={...spec};
+        replacement.userData.frontroomBevelLevel=level;
+        graphicsGeometryCache.set(key,replacement);
+      }
+
+      // 元の形状は別の部屋プレビューなどでも共有されるため、
+      // ここでは破棄せずキャッシュとして保持する。
+      object.geometry=replacement;
+    });
+  }
+}
+
+function resizeGraphicsShadow(light,size){
+  if(!light.shadow)return;
+  if(light.shadow.mapSize.x===size &&
+     light.shadow.mapSize.y===size)return;
+
+  light.shadow.mapSize.set(size,size);
+
+  if(light.shadow.map){
+    light.shadow.map.dispose();
+    light.shadow.map=null;
+  }
+  if(light.shadow.mapPass){
+    light.shadow.mapPass.dispose();
+    light.shadow.mapPass=null;
+  }
+  light.shadow.needsUpdate=true;
+}
+
+function updateGraphicsContactShadows(){
+  const visited=new Set();
+  for(const targetScene of graphicsScenes){
+    targetScene.traverse(object=>{
+      if(!object.material)return;
+      const materials=Array.isArray(object.material)
+        ? object.material : [object.material];
+
+      for(const mat of materials){
+        if(visited.has(mat))continue;
+        visited.add(mat);
+
+        const baseOpacity=mat.userData?.frontroomContactOpacity;
+        if(typeof baseOpacity!=='number')continue;
+        mat.opacity=baseOpacity*visualQuality.contactOpacity;
+      }
+    });
+  }
+
+  if(activeAnomaly==='floating'){
+    visualChairContact.material.opacity=0;
+  }
+}
+
+function applyGraphicsPreset(name){
+  if(!Object.prototype.hasOwnProperty.call(
+    visualQualityProfiles,name
+  ))return;
+
+  visualQualityName=name;
+  visualQuality=visualQualityProfiles[name];
+
+  renderer.setPixelRatio(
+    Math.min(devicePixelRatio,visualQuality.pixelRatio)
+  );
+  renderer.setSize(innerWidth,innerHeight);
+
+  // 点光源のシャドウアトラスは横に複数面を並べるため、
+  // GPUの最大テクスチャサイズも考慮する。
+  const maxTexture=renderer.capabilities.maxTextureSize;
+  const pointShadowLimit=Math.max(
+    128,
+    2**Math.floor(Math.log2(maxTexture/4))
+  );
+  const pointShadowSize=Math.min(
+    visualQuality.shadowSize,pointShadowLimit
+  );
+  const spotShadowSize=Math.min(
+    visualQuality.shadowSize,maxTexture
+  );
+
+  resizeGraphicsShadow(mainLight,pointShadowSize);
+  resizeGraphicsShadow(windowLight,spotShadowSize);
+  resizeGraphicsShadow(inspectKey,spotShadowSize);
+
+  // 検査シーンなどにある、同じ光源の複製にも反映する。
+  for(const targetScene of graphicsScenes){
+    targetScene.traverse(object=>{
+      if(!object.isLight || !object.castShadow || !object.shadow)return;
+      resizeGraphicsShadow(
+        object,
+        object.isPointLight?pointShadowSize:spotShadowSize
+      );
+    });
+  }
+
+  const reflectionSize=Math.min(
+    visualQuality.reflectionSize,maxTexture
+  );
+  waterReflection.getRenderTarget().setSize(
+    reflectionSize,reflectionSize
+  );
+
+  updateFurnitureDetail(visualQuality.bevelSegments);
+  updateGraphicsContactShadows();
+
+  renderer.shadowMap.needsUpdate=true;
+  scene.updateMatrixWorld(true);
+  inspectScene.updateMatrixWorld(true);
+  corridorScene.updateMatrixWorld(true);
+
+  updateGraphicsSelection();
+  $('#graphicsNotice').textContent=graphicsText.applied;
+
+  try{
+    localStorage.setItem('frontroom.graphics',name);
+    $('#graphicsSave').textContent=graphicsText.saved;
+  }catch(error){
+    $('#graphicsSave').textContent=graphicsText.unsaved;
+  }
+
+  // URL指定で起動した場合も、次のリロードでは今の選択を維持する。
+  // 通常のURLなら保存設定のみで引き継ぐ。
+  try{
+    const url=new URL(location.href);
+    if(url.searchParams.has('quality')){
+      url.searchParams.set('quality',name);
+      history.replaceState(history.state,'',url);
+    }
+  }catch(error){
+    // file://や一部の埋め込み環境でURL更新ができなくても続行する。
+  }
+}
+
+// 簡易フレームレート表示。
+// GPU負荷だけでなく、端末やブラウザ全体の処理時間を含む目安。
+let graphicsFrameCount=0;
+let graphicsFrameTime=0;
+
+function updateGraphicsPerformance(seconds){
+  if(!graphicsMenuOpen){
+    graphicsFrameCount=0;
+    graphicsFrameTime=0;
+    return;
+  }
+
+  graphicsFrameCount++;
+  graphicsFrameTime+=seconds;
+  if(graphicsFrameTime>=.75){
+    const fps=Math.round(graphicsFrameCount/graphicsFrameTime);
+    $('#graphicsFPS').textContent=`${fps} ${graphicsText.fps}`;
+    graphicsFrameCount=0;
+    graphicsFrameTime=0;
+  }
+}
+
+// 初期状態も選択したプリセットに統一する。
+// URL指定、保存設定のどちらから起動しても同じ結果になる。
+applyGraphicsPreset(visualQualityName);
+$('#graphicsNotice').textContent='';
 
 // 最初のフレームを描画してから、ロード表示を外す。
 renderer.render(scene,camera);
