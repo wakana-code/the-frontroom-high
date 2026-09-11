@@ -1822,6 +1822,47 @@ function updateRoomWallSides(){
   }
 }
 
+// 部屋の壁は厚みのあるBoxGeometry。
+// 部屋側の面だけを異変色にし、外側と開口の断面は通常の壁色にする。
+function updateRoomWallSides(){
+  const insideMaterial=activeAnomaly==='yellow'
+    ? yellowWallMaterial
+    : activeAnomaly==='special'
+      ? dreamWallMaterial
+      : wall;
+
+  for(const surface of roomSurfaces){
+    if(surface.floor || surface.original!==wall)continue;
+
+    const object=surface.object;
+    const position=object.position;
+    let insideFace=-1;
+
+    // BoxGeometryの面番号：
+    // 0:+X / 1:-X / 2:+Y / 3:-Y / 4:+Z / 5:-Z
+    // 部屋の中央へ向いている面が「室内側」。
+    if(Math.abs(position.x)>3.9 &&
+       Math.abs(position.x)>=Math.abs(position.z)){
+      insideFace=position.x>0?1:0;
+    }else if(Math.abs(position.z)>3.9){
+      insideFace=position.z>0?5:4;
+    }
+
+    if(insideFace<0)continue;
+
+    const faceMaterials=[
+      surface.original,
+      surface.original,
+      surface.original,
+      surface.original,
+      surface.original,
+      surface.original
+    ];
+    faceMaterials[insideFace]=insideMaterial;
+    object.material=faceMaterials;
+  }
+}
+
 function activateRoomAnomaly(index){
   activeAnomaly=chooseRoomAnomaly(index);
 
@@ -1859,6 +1900,9 @@ function activateRoomAnomaly(index){
     specialRoomRoot.visible=true;
   }
 
+  // 廊下側の部屋プレビューを作る前に、
+  // 室内側と外側のマテリアルを確定させる。
+  updateRoomWallSides();
   // 廊下側の部屋プレビューを作る前に、
   // 室内側と外側のマテリアルを確定させる。
   updateRoomWallSides();
